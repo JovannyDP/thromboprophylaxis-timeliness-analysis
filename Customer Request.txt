@@ -1,0 +1,16 @@
+Modified Report Summary
+
+The requester asked for the report to display data by Ward based on the Admission Date.
+Changes have been made to both the SQL query and the Visual Studio report:
+
+🟦SQL Query
+	- The updated SQL query reflects the requested changes.
+	- Detailed explanations of these changes are included in the attached SQL file.
+
+🟨 Visual Studio Report
+	- The report was updated to use the new SQL query.
+	- Several text boxes were modified to reference [StartOfMonthAdmitted] instead of [StartOfMonthDischarged].
+	- This change was implemented via:
+		Right Click → Text Box Properties → General / Action
+
+

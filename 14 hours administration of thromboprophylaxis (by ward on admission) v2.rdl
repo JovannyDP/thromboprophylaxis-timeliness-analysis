@@ -1,0 +1,1783 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Report MustUnderstand="df" xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition" xmlns:rd="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner" xmlns:df="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition/defaultfontfamily">
+  <df:DefaultFontFamily>Segoe UI</df:DefaultFontFamily>
+  <AutoRefresh>0</AutoRefresh>
+  <DataSources>
+    <DataSource Name="inforep">
+      <ConnectionProperties>
+        <DataProvider>SQL</DataProvider>
+        <ConnectString>Data Source=rsch-info2\sql1;Initial Catalog=inforep
+
+</ConnectString>
+        <IntegratedSecurity>true</IntegratedSecurity>
+      </ConnectionProperties>
+      <rd:SecurityType>Integrated</rd:SecurityType>
+      <rd:DataSourceID>ded2d4d5-66f3-49ed-8e99-611ba7c796ec</rd:DataSourceID>
+    </DataSource>
+  </DataSources>
+  <DataSets>
+    <DataSet Name="DataSet1">
+      <Query>
+        <DataSourceName>inforep</DataSourceName>
+        <QueryParameters>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
+        </QueryParameters>
+        <CommandText>with vte_risk_assessment as 
+(select distinct encounter_id, FORM_NAME, SECTION_NAME, FIELD_NAME as VTE_RA_Field_Name, FIELD_VALUE as VTE_RA_Field_Value, PERFORMED_DATE_TIME as VTE_RA_Date_Time
+,row_number() over(partition by encounter_id order by performed_date_time asc) vte_risk_assessment_order
+from reporting.CERNER_FORM
+where FORM_NAME = 'VTE Risk Assessment'
+			and SECTION_NAME in ('Patient Group','Mobility')
+			and FIELD_NAME = 'VTE Override'
+			and FIELD_VALUE = 'No Override')
+			
+
+,vte_risk as
+(select distinct encounter_id, FORM_NAME, SECTION_NAME, FIELD_NAME as VTE_Risk_Field_Name, FIELD_VALUE as VTE_Risk_Field_Value from reporting.CERNER_FORM where FIELD_NAME = 'VTE Risk')
+
+-- bleeding risk exclusions added 
+, bleeding_risk_exclusions as (
+select distinct encounter_id, FORM_NAME, SECTION_NAME, FIELD_NAME as Bleed_Risk_Field_Name, FIELD_VALUE as Bleed_Risk_Field_Value from reporting.CERNER_FORM where form_name like '%vte%' and FIELD_NAME = 'Bleeding Risk' and FIELD_VALUE = 'Yes'
+)
+
+, vte_prescription as 
+(select distinct encounter_id, FORM_NAME, SECTION_NAME, FIELD_NAME as VTE_Prescription_Field_Name, FIELD_VALUE as VTE_Prescription_Field_Value, case when FIELD_VALUE = 'yes' then PERFORMED_DATE_TIME end as VTE_Prescription_Date_Time
+from reporting.CERNER_FORM
+where FORM_NAME = 'VTE Risk Assessment'
+			and SECTION_NAME = 'Prescribing'
+			)
+
+
+
+, anticoagulant_dose_check as 
+(select distinct ENCOUNTER_ID, form_name, SECTION_NAME,FIELD_NAME as anticoag_field_name, FIELD_VALUE as anticoag_field_value from reporting.CERNER_FORM
+where FORM_NAME like '%anticoagulant dose check' or FORM_NAME like '%anticoagulant review%')
+
+
+
+, thromboprophylaxis as 
+(select distinct *, try_convert(datetime, left(substring(clinical_display_line, patindex('%[0-9][0-9]/[A-Z][a-z][a-z]/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]%', CLINICAL_DISPLAY_LINE), 103),20)) dose_date_time
+from reporting.orders where ORDER_CATALOG_DESCRIPTION like '%daltep%'
+--or ORDER_CATALOG_DESCRIPTION like '%apixaban%' -- excluded
+--or ORDER_CATALOG_DESCRIPTION like '%warfarin%' -- excluded
+-- or ORDER_CATALOG_DESCRIPTION like '%rivaroxaban%' -- excluded
+-- or ORDER_CATALOG_DESCRIPTION like '%edoxaban%' -- excluded
+-- or ORDER_CATALOG_DESCRIPTION like '%dabigatran%' -- excluded
+ or ORDER_CATALOG_DESCRIPTION like '%Fondaparinux%' -- included
+ or ORDER_CATALOG_DESCRIPTION = 'Heparin' -- included
+)
+
+
+, dataset as (
+select distinct hps.SOURCE_ID
+,hps.local_patient_identifier as hosp_number
+,PERSON_FULL_NAME
+,hps.START_DATE_TIME_HOSPITAL_PROVIDER_SPELL Admission_Date_Time
+,hps.DISCHARGE_DATE_TIME_HOSPITAL_PROVIDER_SPELL Discharge_Date_Time
+, hps.Decided_To_Admit_Date_Time
+, case when vte_risk_assessment.VTE_RA_Field_Name = 'VTE Override'
+			and vte_risk_assessment.vte_ra_field_Value = 'No Override'
+			then 'VTE Risk Assessment Done' 
+			else 'VTE Risk Assessment Not Done' end as VTE_Risk_Assessment_Done
+, case when vte_risk.VTE_Risk_Field_Name  = 'VTE Risk' and VTE_Risk_Field_Value = 'Yes' then 'VTE Risk'
+	   when vte_risk.VTE_Risk_Field_Name  = 'VTE Risk' and VTE_Risk_Field_Value = 'No' then 'No VTE Risk'
+	   end as VTE_Risk_Status
+, case when vte_risk_assessment.FORM_NAME = 'VTE Risk Assessment'
+			and vte_risk_assessment.SECTION_NAME in ('Patient Group','Mobility')
+			and vte_risk_assessment.VTE_RA_Field_Name = 'VTE Override'
+			and vte_risk_assessment.VTE_RA_Field_Value = 'No Override'
+			then vte_risk_assessment.VTE_RA_Date_Time
+			end as VTE_Risk_Assessment_Date_Time
+, case when vte_prescription.FORM_NAME = 'VTE Risk Assessment'
+			and vte_prescription.SECTION_NAME = 'Prescribing'
+			and vte_prescription.VTE_Prescription_Field_Name = 'VTE Reason Prophylaxis Not Prescribed' then 'VTE Prophylaxis Not Prescribed'
+	   when vte_prescription.FORM_NAME = 'VTE Risk Assessment'
+			and vte_prescription.SECTION_NAME = 'Prescribing'
+			and vte_prescription.VTE_Prescription_Field_Name = 'VTE Prophylaxis Prescribed'
+			and vte_prescription.VTE_Prescription_Field_Value = 'No' then 'VTE Prophylaxis Not Prescribed'
+	   when vte_prescription.FORM_NAME = 'VTE Risk Assessment'
+			and vte_prescription.SECTION_NAME = 'Prescribing'
+			and vte_prescription.VTE_Prescription_Field_Name = 'VTE Prophylaxis Prescribed'
+			and vte_prescription.VTE_Prescription_Field_Value = 'Yes' then 'VTE Prophylaxis Prescribed'
+	   end as VTE_Prophylaxis_Prescription
+, case when vte_prescription.FORM_NAME = 'VTE Risk Assessment'
+			and vte_prescription.SECTION_NAME = 'Prescribing'
+			and vte_prescription.VTE_Prescription_Field_Name = 'VTE Prophylaxis Prescribed'
+			and vte_prescription.VTE_Prescription_Field_Value = 'Yes' then VTE_Prescription_Date_Time
+			end as VTE_Prophylaxis_Prescription_Date_Time
+, string_agg(concat(anticoag_field_name,': ',anticoag_field_value),', ') Anticoag_Notes
+,thromboprophylaxis.ORDER_CATALOG_DESCRIPTION
+,thromboprophylaxis.CLINICAL_DISPLAY_LINE
+--,concat(thromboprophylaxis.STRENGTH_DOSE, ' ', thromboprophylaxis.STRENGTH_DOSE_UNIT) Dose
+, case when dose_date_time is not null then
+ROW_NUMBER() over (partition by thromboprophylaxis.encounter_id 
+order by dose_date_time asc) else 0 end as dose_order
+, case when dose_date_time is not null then
+ROW_NUMBER() over (partition by thromboprophylaxis.encounter_id 
+order by dose_date_time desc)
+else 0 end as number_of_recorded_doses -- only use this name if you're looking at the first dose only. Otherwise call it reverse_dose_order 
+, case when dose_date_time is not null then dose_date_time else VTE_Prescription_Date_Time end as thromboprophylaxis_dose_date_time
+, case when ROW_NUMBER() over (partition by thromboprophylaxis.encounter_id 
+		order by dose_date_time asc) = '1' 
+		then datediff(hh,hps.START_DATE_TIME_HOSPITAL_PROVIDER_SPELL,dose_date_time)
+		end as Hours_between_Admission_and_Dose
+, case when datediff(hh,hps.START_DATE_TIME_HOSPITAL_PROVIDER_SPELL,dose_date_time) &lt;= '14'  
+		and ROW_NUMBER() over (partition by thromboprophylaxis.encounter_id 
+		order by dose_date_time asc) = '1' then 0 -- 0 is a non-breach i.e. was administered within 14 hours
+	   when datediff(hh,hps.START_DATE_TIME_HOSPITAL_PROVIDER_SPELL,dose_date_time) &gt; '14' 
+		and ROW_NUMBER() over (partition by thromboprophylaxis.encounter_id 
+		order by dose_date_time asc) = '1' then 1 -- 1 is a breach i.e. was not administered within 14 hours
+	   else 0
+	   end as '14 Hour Breach Status'
+,patient.PERSON_BIRTH_DATE_TIME
+,ward.ward_desc1 Ward_At_Admission
+,ward.LAST_REAL_WARD_LOCAL Ward_Current_Discharge
+--,DATEADD(month, DATEDIFF(month, 0, DISCHARGE_DATE_HOSPITAL_PROVIDER_SPELL), 0) AS StartOfMonthDischarged
+,DATEADD(month, DATEDIFF(month, 0, START_DATE_TIME_HOSPITAL_PROVIDER_SPELL), 0) AS StartOfMonthAdmitted
+
+from reporting.HOSPITAL_PROVIDER_SPELL hps
+left join thromboprophylaxis
+on hps.SOURCE_ID=thromboprophylaxis.ENCOUNTER_ID
+left join vte_risk_assessment
+on hps.SOURCE_ID=vte_risk_assessment.ENCOUNTER_ID
+left join vte_risk
+on hps.SOURCE_ID=vte_risk.ENCOUNTER_ID
+left join vte_prescription
+on hps.SOURCE_ID=vte_prescription.ENCOUNTER_ID
+left join anticoagulant_dose_check
+on hps.SOURCE_ID=anticoagulant_dose_check.ENCOUNTER_ID
+left join reporting.patient 
+on hps.LOCAL_PATIENT_IDENTIFIER=PATIENT.LOCAL_PATIENT_IDENTIFIER
+left join reporting.HOSPITAL_PROVIDER_SPELL_WARD_STAY_FLAT ward 
+on hps.SOURCE_ID=ward.HOSPITAL_PROVIDER_SPELL_SOURCE_ID
+left join bleeding_risk_exclusions
+on hps.SOURCE_ID=bleeding_risk_exclusions.ENCOUNTER_ID
+
+where 1=1
+--and DISCHARGE_DATE_HOSPITAL_PROVIDER_SPELL between @StartDate and @EndDate
+and START_DATE_TIME_HOSPITAL_PROVIDER_SPELL between @StartDate and @EndDate
+and (datediff(hh,start_date_hospital_provider_spell,discharge_date_hospital_provider_spell) &gt; '6' or vte_risk.VTE_Risk_Field_Name  = 'VTE Risk' and VTE_Risk_Field_Value = 'Yes')
+and (vte_risk_assessment_order = '1' or VTE_RA_Date_Time is null)
+and AGE_AT_ADMISSION &gt;= '16'
+and bleeding_risk_exclusions.Bleed_Risk_Field_Value is null
+
+group by hps.SOURCE_ID
+,hps.local_patient_identifier
+,PERSON_FULL_NAME
+,hps.START_DATE_TIME_HOSPITAL_PROVIDER_SPELL
+,hps.DISCHARGE_DATE_TIME_HOSPITAL_PROVIDER_SPELL
+,thromboprophylaxis.ENCOUNTER_ID
+, hps.Decided_To_Admit_Date_Time
+, case when vte_risk_assessment.VTE_RA_Field_Name = 'VTE Override'
+			and vte_risk_assessment.vte_ra_field_Value = 'No Override'
+			then 'VTE Risk Assessment Done' 
+			else 'VTE Risk Assessment Not Done' end
+, case when vte_risk.VTE_Risk_Field_Name  = 'VTE Risk' and VTE_Risk_Field_Value = 'Yes' then 'VTE Risk'
+	   when vte_risk.VTE_Risk_Field_Name  = 'VTE Risk' and VTE_Risk_Field_Value = 'No' then 'No VTE Risk'
+	   end
+, case when vte_risk_assessment.FORM_NAME = 'VTE Risk Assessment'
+			and vte_risk_assessment.SECTION_NAME in ('Patient Group','Mobility')
+			and vte_risk_assessment.VTE_RA_Field_Name = 'VTE Override'
+			and vte_risk_assessment.VTE_RA_Field_Value = 'No Override'
+			then vte_risk_assessment.VTE_RA_Date_Time
+			end
+, case when vte_prescription.FORM_NAME = 'VTE Risk Assessment'
+			and vte_prescription.SECTION_NAME = 'Prescribing'
+			and vte_prescription.VTE_Prescription_Field_Name = 'VTE Reason Prophylaxis Not Prescribed' then 'VTE Prophylaxis Not Prescribed'
+	   when vte_prescription.FORM_NAME = 'VTE Risk Assessment'
+			and vte_prescription.SECTION_NAME = 'Prescribing'
+			and vte_prescription.VTE_Prescription_Field_Name = 'VTE Prophylaxis Prescribed'
+			and vte_prescription.VTE_Prescription_Field_Value = 'No' then 'VTE Prophylaxis Not Prescribed'
+	   when vte_prescription.FORM_NAME = 'VTE Risk Assessment'
+			and vte_prescription.SECTION_NAME = 'Prescribing'
+			and vte_prescription.VTE_Prescription_Field_Name = 'VTE Prophylaxis Prescribed'
+			and vte_prescription.VTE_Prescription_Field_Value = 'Yes' then 'VTE Prophylaxis Prescribed'
+	   end
+, case when vte_prescription.FORM_NAME = 'VTE Risk Assessment'
+			and vte_prescription.SECTION_NAME = 'Prescribing'
+			and vte_prescription.VTE_Prescription_Field_Name = 'VTE Prophylaxis Prescribed'
+			and vte_prescription.VTE_Prescription_Field_Value = 'Yes' then VTE_Prescription_Date_Time
+			end
+,thromboprophylaxis.ORDER_CATALOG_DESCRIPTION
+,thromboprophylaxis.CLINICAL_DISPLAY_LINE
+--,concat(thromboprophylaxis.STRENGTH_DOSE, ' ', thromboprophylaxis.STRENGTH_DOSE_UNIT) Dose
+, case when dose_date_time is not null then dose_date_time else VTE_Prescription_Date_Time end
+, dose_date_time
+, datediff(hh,hps.START_DATE_TIME_HOSPITAL_PROVIDER_SPELL,dose_date_time) 
+, case  when datediff(hh,hps.START_DATE_TIME_HOSPITAL_PROVIDER_SPELL,thromboprophylaxis.ORDER_DATE_TIME) &lt;= '14' then '1'
+		when datediff(hh,hps.START_DATE_TIME_HOSPITAL_PROVIDER_SPELL,thromboprophylaxis.ORDER_DATE_TIME) &gt; '14' then '0'
+		end
+,patient.PERSON_BIRTH_DATE_TIME
+,ward.ward_desc1 
+,ward.LAST_REAL_WARD_LOCAL 
+--,DATEADD(month, DATEDIFF(month, 0, DISCHARGE_DATE_HOSPITAL_PROVIDER_SPELL), 0)
+,DATEADD(month, DATEDIFF(month, 0, START_DATE_TIME_HOSPITAL_PROVIDER_SPELL), 0)
+)
+
+select *
+, case when anticoag_notes = ': ' or anticoag_notes  like '%: , : %' then 'No Notes' else Anticoag_Notes end as Anticoag_Notes_2
+from dataset
+where 1=1
+and dose_order in ('1','0') -- or reverse_dose_order = '1'
+and Ward_Current_Discharge  NOT LIKE '%RS ED%'
+AND Ward_Current_Discharge &lt;&gt; 'RS Emergency Department'
+AND Ward_Current_Discharge  NOT LIKE '%RS AEC%'
+AND Ward_Current_Discharge  NOT LIKE '%RS AECU%'
+AND Ward_Current_Discharge  NOT LIKE '%RS CDU%'
+AND Ward_Current_Discharge  NOT LIKE '%RS Mortuary%'
+AND Ward_Current_Discharge  NOT LIKE '%RS Frailty%'
+AND Ward_Current_Discharge  NOT LIKE '%RS Delivery%'
+AND Ward_Current_Discharge  NOT LIKE '%RS Maternity%'
+AND Ward_Current_Discharge  NOT LIKE '%RS Cardiac%'
+AND Ward_Current_Discharge  NOT LIKE '%RS Main Theatre%'
+AND Ward_Current_Discharge  NOT LIKE '%RS Endo Theatre%'
+AND Ward_Current_Discharge  NOT LIKE '%RS%Theatre%'
+AND Ward_Current_Discharge NOT LIKE '%RS CHILWORTH%'--exclusion
+AND Ward_Current_Discharge NOT LIKE '%RS MAX%FAC%'--exclusion
+AND Ward_Current_Discharge not like '%RS HASCOMBE PAU%'--exclusion  -- we want hascombe but only patients that are over 16 
+AND Ward_Current_Discharge NOT LIKE '%RS MIDWIFE%'--exclusion
+AND Ward_Current_Discharge NOT LIKE '%RE%AEC%'--exclusion
+AND Ward_Current_Discharge NOT LIKE '%SDEC%'--exclusion
+
+
+
+order by SOURCE_ID, thromboprophylaxis_dose_date_time</CommandText>
+        <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
+      </Query>
+      <Fields>
+        <Field Name="SOURCE_ID">
+          <DataField>SOURCE_ID</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="hosp_number">
+          <DataField>hosp_number</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="PERSON_FULL_NAME">
+          <DataField>PERSON_FULL_NAME</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Admission_Date_Time">
+          <DataField>Admission_Date_Time</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="Discharge_Date_Time">
+          <DataField>Discharge_Date_Time</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="Decided_To_Admit_Date_Time">
+          <DataField>Decided_To_Admit_Date_Time</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="VTE_Risk_Assessment_Done">
+          <DataField>VTE_Risk_Assessment_Done</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="VTE_Risk_Status">
+          <DataField>VTE_Risk_Status</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="VTE_Risk_Assessment_Date_Time">
+          <DataField>VTE_Risk_Assessment_Date_Time</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="VTE_Prophylaxis_Prescription">
+          <DataField>VTE_Prophylaxis_Prescription</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="VTE_Prophylaxis_Prescription_Date_Time">
+          <DataField>VTE_Prophylaxis_Prescription_Date_Time</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="Anticoag_Notes">
+          <DataField>Anticoag_Notes</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="ORDER_CATALOG_DESCRIPTION">
+          <DataField>ORDER_CATALOG_DESCRIPTION</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="CLINICAL_DISPLAY_LINE">
+          <DataField>CLINICAL_DISPLAY_LINE</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="dose_order">
+          <DataField>dose_order</DataField>
+          <rd:TypeName>System.Int64</rd:TypeName>
+        </Field>
+        <Field Name="number_of_recorded_doses">
+          <DataField>number_of_recorded_doses</DataField>
+          <rd:TypeName>System.Int64</rd:TypeName>
+        </Field>
+        <Field Name="thromboprophylaxis_dose_date_time">
+          <DataField>thromboprophylaxis_dose_date_time</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="Hours_between_Admission_and_Dose">
+          <DataField>Hours_between_Admission_and_Dose</DataField>
+          <rd:TypeName>System.Int32</rd:TypeName>
+        </Field>
+        <Field Name="ID14_Hour_Breach_Status">
+          <DataField>14 Hour Breach Status</DataField>
+          <rd:TypeName>System.Int32</rd:TypeName>
+        </Field>
+        <Field Name="PERSON_BIRTH_DATE_TIME">
+          <DataField>PERSON_BIRTH_DATE_TIME</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="Ward_At_Admission">
+          <DataField>Ward_At_Admission</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Ward_Current_Discharge">
+          <DataField>Ward_Current_Discharge</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="StartOfMonthAdmitted">
+          <DataField>StartOfMonthAdmitted</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="Anticoag_Notes_2">
+          <DataField>Anticoag_Notes_2</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="defaultdates">
+      <Query>
+        <DataSourceName>inforep</DataSourceName>
+        <CommandText>select
+DATEADD(month, DATEDIFF(month, -1, getdate()) - 2, 0)  as StartDate-- first day of previous month midnight
+,
+DATEADD(ss, -1, DATEADD(month, DATEDIFF(month, 0, getdate()), 0)) as EndDate -- last day of previous month 23:59</CommandText>
+      </Query>
+      <Fields>
+        <Field Name="StartDate">
+          <DataField>StartDate</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="EndDate">
+          <DataField>EndDate</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+  </DataSets>
+  <ReportSections>
+    <ReportSection>
+      <Body>
+        <ReportItems>
+          <Textbox Name="textbox1">
+            <CanGrow>true</CanGrow>
+            <KeepTogether>true</KeepTogether>
+            <Paragraphs>
+              <Paragraph>
+                <TextRuns>
+                  <TextRun>
+                    <Value>14 Hours Administration of Thromboprophylaxis</Value>
+                    <Style>
+                      <FontSize>20pt</FontSize>
+                      <FontWeight>Bold</FontWeight>
+                    </Style>
+                  </TextRun>
+                </TextRuns>
+                <Style />
+              </Paragraph>
+            </Paragraphs>
+            <rd:DefaultName>textbox1</rd:DefaultName>
+            <Left>0.44097cm</Left>
+            <Height>0.62444in</Height>
+            <Width>7.22222in</Width>
+            <Style>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <PaddingBottom>2pt</PaddingBottom>
+            </Style>
+          </Textbox>
+          <Tablix Name="table1">
+            <TablixBody>
+              <TablixColumns>
+                <TablixColumn>
+                  <Width>2.0625in</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>1.19444in</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>1.375in</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>1.29862in</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>1.29167in</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>1.65972in</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>1.61806in</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>1.61111in</Width>
+                </TablixColumn>
+              </TablixColumns>
+              <TablixRows>
+                <TablixRow>
+                  <Height>0.46639in</Height>
+                  <TablixCells>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox10">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>Ward</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox10</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <LeftBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </LeftBorder>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox8">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>Total Number of Patients</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox8</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox29">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>First Dose Within 14 Hours %</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox29</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <BackgroundColor>LightGrey</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox19">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>First Dose after 14 Hours</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <FontFamily />
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox19</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <FontFamily />
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox2">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>First Dose within 14 Hours</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox2</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox31">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>Thromboprophylaxis Administered %</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox31</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <LeftBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </LeftBorder>
+                            <BackgroundColor>LightGrey</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox4">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>Thromboprophylaxis  Not Administered</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox4</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox6">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>Thromboprophylaxis Administered</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox6</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                  </TablixCells>
+                </TablixRow>
+                <TablixRow>
+                  <Height>0.25in</Height>
+                  <TablixCells>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox35">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>Trust</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox35</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <LeftBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </LeftBorder>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox36">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=count(Fields!SOURCE_ID.Value)</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox36</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox37">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=SUM(IIF(Fields!ID14_Hour_Breach_Status.Value = "0",Fields!dose_order.Value,0))/sum(Fields!dose_order.Value)</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Format>0.00%</Format>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox37</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <BackgroundColor>LightGrey</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox38">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=SUM(Fields!ID14_Hour_Breach_Status.Value)</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox38</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox39">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=SUM(IIF(Fields!ID14_Hour_Breach_Status.Value = "0",Fields!dose_order.Value,0))</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox39</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox40">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=SUM(Fields!dose_order.Value)/count(Fields!SOURCE_ID.Value)</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Format>0.00%</Format>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox40</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <LeftBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </LeftBorder>
+                            <BackgroundColor>LightGrey</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox41">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=SUM(IIF(IsNothing(Fields!thromboprophylaxis_dose_date_time.Value),1,0))</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox41</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox42">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=sum(Fields!dose_order.Value)</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <FontSize>11pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#666666</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox42</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BottomBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </BottomBorder>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                  </TablixCells>
+                </TablixRow>
+                <TablixRow>
+                  <Height>0.21in</Height>
+                  <TablixCells>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Ward_At_Admission">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!Ward_At_Admission.Value</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <LeftBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </LeftBorder>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox9">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=count(Fields!SOURCE_ID.Value)</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <TextDecoration>Underline</TextDecoration>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox9</rd:DefaultName>
+                          <ActionInfo>
+                            <Actions>
+                              <Action>
+                                <Drillthrough>
+                                  <ReportName>14 hours administration of thromboprophylaxis pld</ReportName>
+                                  <Parameters>
+                                    <Parameter Name="Ward">
+                                      <Value>=Fields!Ward_At_Admission.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="StartDate">
+                                      <Value>=Fields!StartOfMonthAdmitted.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="EndDate">
+                                      <Value>=DateAdd("s",-1,DateAdd(DateInterval.Month,1,Fields!StartOfMonthAdmitted.Value))</Value>
+                                    </Parameter>
+                                  </Parameters>
+                                </Drillthrough>
+                              </Action>
+                            </Actions>
+                          </ActionInfo>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox30">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=iif(Sum(Fields!dose_order.Value)=0, "-",SUM(IIF(Fields!ID14_Hour_Breach_Status.Value = "0",Fields!dose_order.Value,0))/sum(Fields!dose_order.Value))</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <Format>0.00%</Format>
+                                    <TextDecoration>None</TextDecoration>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox30</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <BackgroundColor>LightGrey</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Hours_between_Admission_and_Dose">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=SUM(Fields!ID14_Hour_Breach_Status.Value)</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <TextDecoration>Underline</TextDecoration>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Hours_between_Admission_and_Dose</rd:DefaultName>
+                          <ActionInfo>
+                            <Actions>
+                              <Action>
+                                <Drillthrough>
+                                  <ReportName>14 hours administration of thromboprophylaxis pld</ReportName>
+                                  <Parameters>
+                                    <Parameter Name="Ward">
+                                      <Value>=Fields!Ward_At_Admission.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="BreachStatus">
+                                      <Value>1</Value>
+                                    </Parameter>
+                                    <Parameter Name="StartDate">
+                                      <Value>=Fields!StartOfMonthAdmitted.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="EndDate">
+                                      <Value>=DateAdd("s",-1,DateAdd(DateInterval.Month,1,Fields!StartOfMonthAdmitted.Value))</Value>
+                                    </Parameter>
+                                  </Parameters>
+                                </Drillthrough>
+                              </Action>
+                            </Actions>
+                          </ActionInfo>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <FontFamily />
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox3">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=SUM(IIF(Fields!ID14_Hour_Breach_Status.Value = "0",Fields!dose_order.Value,0))</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <TextDecoration>Underline</TextDecoration>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox3</rd:DefaultName>
+                          <ActionInfo>
+                            <Actions>
+                              <Action>
+                                <Drillthrough>
+                                  <ReportName>14 hours administration of thromboprophylaxis pld</ReportName>
+                                  <Parameters>
+                                    <Parameter Name="Ward">
+                                      <Value>=Fields!Ward_At_Admission.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="BreachStatus">
+                                      <Value>0</Value>
+                                    </Parameter>
+                                    <Parameter Name="DoseAdministered">
+                                      <Value>1</Value>
+                                    </Parameter>
+                                    <Parameter Name="StartDate">
+                                      <Value>=Fields!StartOfMonthAdmitted.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="EndDate">
+                                      <Value>=DateAdd("s",-1,DateAdd(DateInterval.Month,1,Fields!StartOfMonthAdmitted.Value))</Value>
+                                    </Parameter>
+                                  </Parameters>
+                                </Drillthrough>
+                              </Action>
+                            </Actions>
+                          </ActionInfo>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox32">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=iif(count(Fields!SOURCE_ID.Value)=0, "-",SUM(Fields!dose_order.Value)/count(Fields!SOURCE_ID.Value))</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <Format>0.00%</Format>
+                                    <TextDecoration>None</TextDecoration>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox32</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <LeftBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </LeftBorder>
+                            <BackgroundColor>LightGrey</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox5">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=SUM(IIF(IsNothing(Fields!thromboprophylaxis_dose_date_time.Value),1,0))</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <TextDecoration>Underline</TextDecoration>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox5</rd:DefaultName>
+                          <ActionInfo>
+                            <Actions>
+                              <Action>
+                                <Drillthrough>
+                                  <ReportName>14 hours administration of thromboprophylaxis pld</ReportName>
+                                  <Parameters>
+                                    <Parameter Name="Ward">
+                                      <Value>=Fields!Ward_At_Admission.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="DoseAdministered">
+                                      <Value>0</Value>
+                                    </Parameter>
+                                    <Parameter Name="StartDate">
+                                      <Value>=Fields!StartOfMonthAdmitted.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="EndDate">
+                                      <Value>=DateAdd("s",-1,DateAdd(DateInterval.Month,1,Fields!StartOfMonthAdmitted.Value))</Value>
+                                    </Parameter>
+                                  </Parameters>
+                                </Drillthrough>
+                              </Action>
+                            </Actions>
+                          </ActionInfo>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Textbox7">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=sum(Fields!dose_order.Value)</Value>
+                                  <Style>
+                                    <FontFamily />
+                                    <TextDecoration>Underline</TextDecoration>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox7</rd:DefaultName>
+                          <ActionInfo>
+                            <Actions>
+                              <Action>
+                                <Drillthrough>
+                                  <ReportName>14 hours administration of thromboprophylaxis pld</ReportName>
+                                  <Parameters>
+                                    <Parameter Name="Ward">
+                                      <Value>=Fields!Ward_At_Admission.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="DoseAdministered">
+                                      <Value>1</Value>
+                                    </Parameter>
+                                    <Parameter Name="StartDate">
+                                      <Value>=Fields!StartOfMonthAdmitted.Value</Value>
+                                    </Parameter>
+                                    <Parameter Name="EndDate">
+                                      <Value>=DateAdd("s",-1,DateAdd(DateInterval.Month,1,Fields!StartOfMonthAdmitted.Value))</Value>
+                                    </Parameter>
+                                  </Parameters>
+                                </Drillthrough>
+                              </Action>
+                            </Actions>
+                          </ActionInfo>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                            <RightBorder>
+                              <Color>Silver</Color>
+                              <Style>Solid</Style>
+                            </RightBorder>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                  </TablixCells>
+                </TablixRow>
+              </TablixRows>
+            </TablixBody>
+            <TablixColumnHierarchy>
+              <TablixMembers>
+                <TablixMember>
+                  <Group Name="Month">
+                    <GroupExpressions>
+                      <GroupExpression>=Fields!StartOfMonthAdmitted.Value</GroupExpression>
+                    </GroupExpressions>
+                  </Group>
+                  <TablixMembers>
+                    <TablixMember>
+                      <TablixHeader>
+                        <Size>0.25in</Size>
+                        <CellContents>
+                          <Textbox Name="StartOfMonthAdmitted">
+                            <CanGrow>true</CanGrow>
+                            <KeepTogether>true</KeepTogether>
+                            <Paragraphs>
+                              <Paragraph>
+                                <TextRuns>
+                                  <TextRun>
+                                    <Value>=Fields!StartOfMonthAdmitted.Value</Value>
+                                    <Style>
+                                      <FontFamily />
+                                      <FontSize>11pt</FontSize>
+                                      <FontWeight>Bold</FontWeight>
+                                      <Format>MMM yy</Format>
+                                      <Color>#666666</Color>
+                                    </Style>
+                                  </TextRun>
+                                </TextRuns>
+                                <Style>
+                                  <TextAlign>Center</TextAlign>
+                                </Style>
+                              </Paragraph>
+                            </Paragraphs>
+                            <Style>
+                              <Border>
+                                <Color>Silver</Color>
+                                <Style>Solid</Style>
+                              </Border>
+                              <BackgroundColor>LightGrey</BackgroundColor>
+                              <PaddingLeft>2pt</PaddingLeft>
+                              <PaddingRight>2pt</PaddingRight>
+                              <PaddingTop>2pt</PaddingTop>
+                              <PaddingBottom>2pt</PaddingBottom>
+                            </Style>
+                          </Textbox>
+                        </CellContents>
+                      </TablixHeader>
+                      <TablixMembers>
+                        <TablixMember />
+                        <TablixMember />
+                        <TablixMember />
+                        <TablixMember />
+                        <TablixMember />
+                        <TablixMember />
+                        <TablixMember />
+                        <TablixMember />
+                      </TablixMembers>
+                    </TablixMember>
+                  </TablixMembers>
+                </TablixMember>
+              </TablixMembers>
+            </TablixColumnHierarchy>
+            <TablixRowHierarchy>
+              <TablixMembers>
+                <TablixMember>
+                  <KeepWithGroup>After</KeepWithGroup>
+                  <RepeatOnNewPage>true</RepeatOnNewPage>
+                  <KeepTogether>true</KeepTogether>
+                </TablixMember>
+                <TablixMember>
+                  <KeepWithGroup>After</KeepWithGroup>
+                  <RepeatOnNewPage>true</RepeatOnNewPage>
+                </TablixMember>
+                <TablixMember>
+                  <Group Name="WardGroup">
+                    <GroupExpressions>
+                      <GroupExpression>=Fields!Ward_At_Admission.Value</GroupExpression>
+                    </GroupExpressions>
+                    <DataElementName>Detail</DataElementName>
+                  </Group>
+                  <TablixMembers>
+                    <TablixMember />
+                  </TablixMembers>
+                  <DataElementName>Detail_Collection</DataElementName>
+                  <DataElementOutput>Output</DataElementOutput>
+                  <KeepTogether>true</KeepTogether>
+                </TablixMember>
+              </TablixMembers>
+            </TablixRowHierarchy>
+            <RepeatColumnHeaders>true</RepeatColumnHeaders>
+            <RepeatRowHeaders>true</RepeatRowHeaders>
+            <KeepTogether>true</KeepTogether>
+            <DataSetName>DataSet1</DataSetName>
+            <SortExpressions>
+              <SortExpression>
+                <Value>=Fields!Ward_Current_Discharge.Value</Value>
+              </SortExpression>
+            </SortExpressions>
+            <Top>1.10472in</Top>
+            <Left>0.44094cm</Left>
+            <Height>1.17639in</Height>
+            <Width>12.11112in</Width>
+            <ZIndex>1</ZIndex>
+            <Style />
+          </Tablix>
+          <Textbox Name="Textbox27">
+            <CanGrow>true</CanGrow>
+            <KeepTogether>true</KeepTogether>
+            <Paragraphs>
+              <Paragraph>
+                <TextRuns>
+                  <TextRun>
+                    <Value>="Executed at " &amp; Format(CDate(Globals!ExecutionTime), "dd/MM/yyyy HH:mm:ss") &amp; " By " &amp;  User!UserID</Value>
+                    <Style>
+                      <FontWeight>Bold</FontWeight>
+                      <Color>CornflowerBlue</Color>
+                    </Style>
+                  </TextRun>
+                </TextRuns>
+                <Style />
+              </Paragraph>
+            </Paragraphs>
+            <rd:DefaultName>Textbox27</rd:DefaultName>
+            <Top>0.50222in</Top>
+            <Left>0.17362in</Left>
+            <Height>0.25in</Height>
+            <Width>7.22222in</Width>
+            <ZIndex>2</ZIndex>
+            <Style>
+              <Border>
+                <Style>None</Style>
+              </Border>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <PaddingBottom>2pt</PaddingBottom>
+            </Style>
+          </Textbox>
+          <Textbox Name="Textbox28">
+            <CanGrow>true</CanGrow>
+            <KeepTogether>true</KeepTogether>
+            <Paragraphs>
+              <Paragraph>
+                <TextRuns>
+                  <TextRun>
+                    <Value>="14 Hour Administration of Thromboprophylaxis Summary for " &amp; Format(Parameters!StartDate.Value, "dd/MM/yyyy") &amp; " - " &amp; Format(Parameters!EndDate.Value, "dd/MM/yyyy")</Value>
+                    <Style />
+                  </TextRun>
+                </TextRuns>
+                <Style />
+              </Paragraph>
+            </Paragraphs>
+            <rd:DefaultName>Textbox28</rd:DefaultName>
+            <Top>0.76611in</Top>
+            <Left>0.17361in</Left>
+            <Height>0.25in</Height>
+            <Width>7.22222in</Width>
+            <ZIndex>3</ZIndex>
+            <Style>
+              <Border>
+                <Style>None</Style>
+              </Border>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <PaddingBottom>2pt</PaddingBottom>
+            </Style>
+          </Textbox>
+        </ReportItems>
+        <Height>2.53111in</Height>
+        <Style />
+      </Body>
+      <Width>22.36111in</Width>
+      <Page>
+        <LeftMargin>1in</LeftMargin>
+        <RightMargin>1in</RightMargin>
+        <TopMargin>1in</TopMargin>
+        <BottomMargin>1in</BottomMargin>
+        <Style />
+      </Page>
+    </ReportSection>
+  </ReportSections>
+  <ReportParameters>
+    <ReportParameter Name="StartDate">
+      <DataType>DateTime</DataType>
+      <DefaultValue>
+        <DataSetReference>
+          <DataSetName>defaultdates</DataSetName>
+          <ValueField>StartDate</ValueField>
+        </DataSetReference>
+      </DefaultValue>
+      <Prompt>Start Date</Prompt>
+    </ReportParameter>
+    <ReportParameter Name="EndDate">
+      <DataType>DateTime</DataType>
+      <DefaultValue>
+        <DataSetReference>
+          <DataSetName>defaultdates</DataSetName>
+          <ValueField>EndDate</ValueField>
+        </DataSetReference>
+      </DefaultValue>
+      <Prompt>End Date</Prompt>
+    </ReportParameter>
+  </ReportParameters>
+  <ReportParametersLayout>
+    <GridLayoutDefinition>
+      <NumberOfColumns>2</NumberOfColumns>
+      <NumberOfRows>1</NumberOfRows>
+      <CellDefinitions>
+        <CellDefinition>
+          <ColumnIndex>0</ColumnIndex>
+          <RowIndex>0</RowIndex>
+          <ParameterName>StartDate</ParameterName>
+        </CellDefinition>
+        <CellDefinition>
+          <ColumnIndex>1</ColumnIndex>
+          <RowIndex>0</RowIndex>
+          <ParameterName>EndDate</ParameterName>
+        </CellDefinition>
+      </CellDefinitions>
+    </GridLayoutDefinition>
+  </ReportParametersLayout>
+  <Language>en-US</Language>
+  <ConsumeContainerWhitespace>true</ConsumeContainerWhitespace>
+  <rd:ReportUnitType>Inch</rd:ReportUnitType>
+  <rd:ReportID>18b1af0e-fe9b-4026-bfc6-5c3bd8dfd12a</rd:ReportID>
+</Report>

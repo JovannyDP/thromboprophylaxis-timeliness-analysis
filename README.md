@@ -1,4 +1,9 @@
 # 🩺 Thromboprophylaxis Timeliness Analysis
+ 
+![SQL](https://img.shields.io/badge/SQL-Query-blue?logo=sql&logoColor=white)  
+![SSRS](https://img.shields.io/badge/SSRS-Reporting-red?logo=microsoft&logoColor=white)  
+![Visual Studio](https://img.shields.io/badge/Visual%20Studio-IDE-purple?logo=visual-studio&logoColor=white)  
+![Status](https://img.shields.io/badge/Status-Completed-brightgreen)  
 
 This project focuses on aligning datasets related to **VTE (Venous Thromboembolism) risk assessments** and **thromboprophylaxis administration**.  
 The goal is to accurately monitor whether thromboprophylaxis is administered **within 14 hours of admission**, by ensuring data consistency at the *ward on admission* level.

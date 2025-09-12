@@ -45,9 +45,14 @@ The goal is to accurately monitor whether thromboprophylaxis is administered **w
 
 ---
 
-## 🚀 Future Improvements
+## 📷 Screenshots
+### Final Result
+![Final Result](assets/SQL Server Reporting Services.png)
 
-- Develop automated ETL to align datasets by *ward on admission*.  
+---
+
+## 🚀 Future Improvements
+  
 - Create dashboards for real-time compliance monitoring.  
 - Extend analysis to other clinical quality measures.  
 

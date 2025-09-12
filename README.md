@@ -46,6 +46,9 @@ The goal is to accurately monitor whether thromboprophylaxis is administered **w
 ---
 
 ## 📷 Screenshots
+### Working Progress
+![Working Progress](assets/VisualStudio.jpg)
+
 ### Final Result
 ![Final Result](assets/SQLServerReportingServices.jpg)
 
